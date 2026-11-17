@@ -26,7 +26,7 @@ export default function Home() {
       setLoading(true);
       setError(null);
       const data = await api.listScans(10);
-      setRecentScans(data || []);
+      setRecentScans(data?.scans || []);
     } catch (err) {
       console.error('Failed to fetch recent scans:', err);
       setError('Unable to load previous scans');
@@ -194,7 +194,7 @@ export default function Home() {
                     <div>
                       <div className="flex items-center space-x-2">
                         <span className="font-semibold text-white group-hover:text-cyan-400 transition-colors">
-                          {scan.project_name || scan.repo_url || 'Codebase Scan'}
+                          {scan.repo_name || scan.repo_url || 'Codebase Scan'}
                         </span>
                         {getStatusBadge(scan.status)}
                       </div>
@@ -219,7 +219,7 @@ export default function Home() {
                           </div>
                         </div>
                         <div className="text-xs px-2.5 py-1 rounded bg-slate-800 text-slate-300">
-                          {scan.issue_counts?.total ?? 0} issues
+                          {scan.total_issues ?? 0} issues
                         </div>
                       </div>
                     )}

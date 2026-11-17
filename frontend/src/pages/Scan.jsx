@@ -238,6 +238,11 @@ export default function Scan() {
           <p className="text-sm text-rose-300 max-w-md mx-auto">
             {error || 'The audit pipeline was unable to complete the analysis for this repository.'}
           </p>
+          {error && (
+            <div className="mt-2 p-3 bg-slate-900/80 rounded-lg border border-slate-800">
+              <p className="text-xs text-slate-400 font-mono break-all">{error}</p>
+            </div>
+          )}
           <div className="pt-4 flex justify-center space-x-3">
             <Link
               to="/"

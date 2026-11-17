@@ -69,7 +69,16 @@ class RepoService:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                stdout, stderr = await proc.communicate()
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(), timeout=120
+                    )
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    raise RuntimeError(
+                        "Repository clone timed out after 120 seconds. "
+                        "The repository may be too large or the network is slow."
+                    )
                 if proc.returncode == 0:
                     logger.info(f"Successfully cloned {normalized_url} using git CLI")
                     return str(dest_path)
