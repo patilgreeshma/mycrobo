@@ -362,5 +362,7 @@ async def _update_progress(scan_id: str, scan: Scan):
         "status": scan.status,
         "progress": scan.progress,
         "current_step": scan.current_step,
-        "total_issues": scan.total_issues,
+        "total_issues": scan.total_issues or 0,
+        "error_message": scan.error_message,
+        "health_score": scan.health_score,
     })

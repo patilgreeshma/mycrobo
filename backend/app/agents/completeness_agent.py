@@ -44,17 +44,18 @@ class CompletenessAgent(BaseAgent):
             # 5. Missing input validation
             all_issues.extend(self._find_missing_validation(content, path, ext))
 
-        # 6. LLM-powered completeness analysis
-        code_files = [
-            f for f in files
-            if f["extension"] in (".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".php", ".go")
-        ]
-        for file_info in code_files[:15]:
-            language = project_info.get("primary_language", "unknown")
-            llm_issues = await llm_client.analyze_completeness(
-                file_info["content"], file_info["path"], language
-            )
-            all_issues.extend(llm_issues)
+        # 6. LLM-powered completeness analysis (max 3 files to respect rate limits)
+        if llm_client.available:
+            code_files = [
+                f for f in files
+                if f["extension"] in (".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".php", ".go")
+            ]
+            for file_info in code_files[:3]:
+                language = project_info.get("primary_language", "unknown")
+                llm_issues = await llm_client.analyze_completeness(
+                    file_info["content"], file_info["path"], language
+                )
+                all_issues.extend(llm_issues)
 
         return self._deduplicate(all_issues)
 

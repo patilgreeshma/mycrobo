@@ -1,11 +1,12 @@
 """
 CodeSentinel - LLM Client
 Wrapper around Google Gemini API for intelligent code analysis.
-Gracefully degrades when no API key is configured.
+Gracefully degrades when no API key is configured or on rate limits/timeouts.
 """
 
 import json
 import logging
+import asyncio
 from typing import Optional, List
 
 from app.config import settings
@@ -22,7 +23,7 @@ except ImportError:
 
 
 class LLMClient:
-    """Client for Google Gemini API with graceful fallback."""
+    """Client for Google Gemini API with graceful fallback and timeouts."""
 
     def __init__(self):
         self.model = None
@@ -56,6 +57,24 @@ class LLMClient:
             logger.error(f"Failed to initialize Gemini: {e}")
             self.available = False
 
+    async def _call_gemini(self, prompt: str, timeout: float = 12.0) -> Optional[str]:
+        """Safely call Gemini in thread with a strict timeout and error capture."""
+        if not self.available or not self.model:
+            return None
+        try:
+            loop = asyncio.get_running_loop()
+            response = await asyncio.wait_for(
+                loop.run_in_executor(None, self.model.generate_content, prompt),
+                timeout=timeout,
+            )
+            return response.text if response else None
+        except asyncio.TimeoutError:
+            logger.warning(f"Gemini API request timed out after {timeout}s")
+            return None
+        except Exception as e:
+            logger.warning(f"Gemini API call failed: {e}")
+            return None
+
     async def analyze_code_issues(
         self,
         code: str,
@@ -65,15 +84,6 @@ class LLMClient:
     ) -> List[dict]:
         """
         Enhance detected issues with LLM-powered explanations and fix suggestions.
-
-        Args:
-            code: The source code content
-            file_path: Path to the file
-            issues: List of issues detected by static analysis
-            language: Programming language of the file
-
-        Returns:
-            Enhanced issues with explanations and suggested fixes
         """
         if not self.available or not issues:
             return issues
@@ -99,38 +109,40 @@ DETECTED ISSUES:
 {issues_desc}
 
 For each issue, provide:
-1. A clear, context-aware explanation of WHY this is problematic in this specific codebase
-2. The potential impact if left unfixed
-3. A concrete code suggestion to fix it
+1. A clear, actionable explanation of WHY this is a problem and what could go wrong in production.
+2. A specific suggestion for how to fix it.
+3. The suggested corrected code that completely fixes the issue.
+4. The original problematic code snippet.
 
-Return a JSON array where each element has:
-{{
-  "index": <issue index starting from 0>,
-  "explanation": "<detailed explanation>",
-  "suggestion": "<how to fix it>",
-  "suggested_code": "<corrected code snippet>",
-  "original_code": "<the problematic code snippet>"
-}}
+Return a JSON array where each element matches the corresponding issue in order:
+[
+  {{
+    "index": 0,
+    "explanation": "Detailed explanation of the root cause and impact...",
+    "suggestion": "Specific instructions to fix...",
+    "suggested_code": "The corrected code...",
+    "original_code": "The original code being replaced..."
+  }}
+]
 
 Return ONLY the JSON array, no other text."""
 
-        try:
-            response = self.model.generate_content(prompt)
-            enhanced = json.loads(response.text)
-
-            # Merge LLM enhancements back into issues
-            for item in enhanced:
-                idx = item.get("index", -1)
-                if 0 <= idx < len(issues):
-                    issues[idx]["explanation"] = item.get("explanation", "")
-                    issues[idx]["suggestion"] = item.get("suggestion", "")
-                    issues[idx]["suggested_code"] = item.get("suggested_code", "")
-                    issues[idx]["original_code"] = item.get("original_code", "")
-
+        raw_json = await self._call_gemini(prompt, timeout=12.0)
+        if not raw_json:
             return issues
 
+        try:
+            enhancements = json.loads(raw_json)
+            for item in enhancements:
+                idx = item.get("index", -1)
+                if 0 <= idx < len(issues):
+                    issues[idx]["explanation"] = item.get("explanation", issues[idx].get("explanation"))
+                    issues[idx]["suggestion"] = item.get("suggestion", issues[idx].get("suggestion"))
+                    issues[idx]["suggested_code"] = item.get("suggested_code", issues[idx].get("suggested_code"))
+                    issues[idx]["original_code"] = item.get("original_code", issues[idx].get("original_code"))
+            return issues
         except Exception as e:
-            logger.warning(f"LLM enhancement failed for {file_path}: {e}")
+            logger.warning(f"Failed to parse LLM enhancement JSON for {file_path}: {e}")
             return issues
 
     async def analyze_security(self, code: str, file_path: str, language: str) -> List[dict]:
@@ -143,47 +155,45 @@ Return ONLY the JSON array, no other text."""
 FILE: {file_path}
 
 ```{language.lower()}
-{code[:6000]}
+{code[:5000]}
 ```
 
 Look for:
 - Hardcoded secrets, API keys, passwords, tokens
 - SQL injection vulnerabilities
 - XSS vulnerabilities
-- Path traversal
 - Insecure authentication/authorization
-- Insecure deserialization
 - Command injection
-- Insecure cryptography
-- Sensitive data exposure
-- Missing security headers
 
-Return a JSON array of found issues. Each issue:
-{{
-  "severity": "critical|high|medium|low",
-  "category": "<category_slug>",
-  "title": "<concise title>",
-  "description": "<what the issue is>",
-  "line_start": <line number or null>,
-  "line_end": <line number or null>,
-  "code_snippet": "<the problematic code>",
-  "explanation": "<why this is dangerous>",
-  "suggestion": "<how to fix>",
-  "suggested_code": "<fixed code>",
-  "original_code": "<original problematic code>"
-}}
+Return a JSON array of found issues:
+[
+  {{
+    "severity": "critical|high|medium|low",
+    "category": "<category_slug>",
+    "title": "<concise title>",
+    "description": "<what the issue is>",
+    "line_start": <line number or null>,
+    "line_end": <line number or null>,
+    "code_snippet": "<the problematic code>",
+    "explanation": "<why this is dangerous>",
+    "suggestion": "<how to fix>",
+    "suggested_code": "<fixed code>",
+    "original_code": "<original problematic code>"
+  }}
+]
+If none found, return []. Return ONLY valid JSON array."""
 
-If no issues found, return an empty array [].
-Return ONLY the JSON array."""
+        raw_json = await self._call_gemini(prompt, timeout=10.0)
+        if not raw_json:
+            return []
 
         try:
-            response = self.model.generate_content(prompt)
-            issues = json.loads(response.text)
+            issues = json.loads(raw_json)
             for issue in issues:
                 issue["agent_type"] = "security"
             return issues
         except Exception as e:
-            logger.warning(f"LLM security analysis failed for {file_path}: {e}")
+            logger.warning(f"Failed to parse LLM security output for {file_path}: {e}")
             return []
 
     async def analyze_quality(self, code: str, file_path: str, language: str) -> List[dict]:
@@ -196,45 +206,40 @@ Return ONLY the JSON array."""
 FILE: {file_path}
 
 ```{language.lower()}
-{code[:6000]}
+{code[:5000]}
 ```
 
-Look for:
-- AI-generated slop: redundant comments that just repeat the code, meaningless variable names, unnecessary wrapper functions, boilerplate that adds no value
-- Code duplication within the file
-- Overly complex functions (too many nested levels, too long)
-- Dead code (unused variables, unreachable code, unused imports)
-- Poor error handling patterns
-- Anti-patterns specific to {language}
-- Inconsistent coding style
-- Functions doing too many things (SRP violations)
+Look for AI slop (redundant wrappers, meaningless boilerplate), duplicate logic, dead code, excessive complexity.
 
-Return a JSON array of found issues. Each issue:
-{{
-  "severity": "high|medium|low|info",
-  "category": "<category_slug>",
-  "title": "<concise title>",
-  "description": "<what the issue is>",
-  "line_start": <line number or null>,
-  "line_end": <line number or null>,
-  "code_snippet": "<the problematic code>",
-  "explanation": "<why this matters>",
-  "suggestion": "<how to improve>",
-  "suggested_code": "<improved code>",
-  "original_code": "<original code>"
-}}
+Return a JSON array:
+[
+  {{
+    "severity": "high|medium|low|info",
+    "category": "<category_slug>",
+    "title": "<concise title>",
+    "description": "<what the issue is>",
+    "line_start": <line number or null>,
+    "line_end": <line number or null>,
+    "code_snippet": "<the problematic code>",
+    "explanation": "<why this matters>",
+    "suggestion": "<how to improve>",
+    "suggested_code": "<improved code>",
+    "original_code": "<original code>"
+  }}
+]
+If none found, return []. Return ONLY valid JSON array."""
 
-If no issues found, return an empty array [].
-Return ONLY the JSON array."""
+        raw_json = await self._call_gemini(prompt, timeout=10.0)
+        if not raw_json:
+            return []
 
         try:
-            response = self.model.generate_content(prompt)
-            issues = json.loads(response.text)
+            issues = json.loads(raw_json)
             for issue in issues:
                 issue["agent_type"] = "quality"
             return issues
         except Exception as e:
-            logger.warning(f"LLM quality analysis failed for {file_path}: {e}")
+            logger.warning(f"Failed to parse LLM quality output for {file_path}: {e}")
             return []
 
     async def analyze_completeness(self, code: str, file_path: str, language: str) -> List[dict]:
@@ -247,47 +252,42 @@ Return ONLY the JSON array."""
 FILE: {file_path}
 
 ```{language.lower()}
-{code[:6000]}
+{code[:5000]}
 ```
 
-Look for:
-- TODO, FIXME, HACK, XXX comments indicating unfinished work
-- Empty or stub function/method bodies (pass, return None, placeholder)
-- Missing input validation
-- Missing error handling (bare except, missing try/catch around risky operations)
-- Incomplete implementations (NotImplementedError, placeholder returns)
-- Missing edge case handling
-- Missing logging for important operations
-- Functions without return type hints or documentation
+Look for unfinished TODOs, empty catch blocks, missing validations, incomplete stubs.
 
-Return a JSON array of found issues. Each issue:
-{{
-  "severity": "high|medium|low|info",
-  "category": "<category_slug>",
-  "title": "<concise title>",
-  "description": "<what is missing>",
-  "line_start": <line number or null>,
-  "line_end": <line number or null>,
-  "code_snippet": "<the incomplete code>",
-  "explanation": "<why this matters for production>",
-  "suggestion": "<what should be implemented>",
-  "suggested_code": "<complete implementation>",
-  "original_code": "<original incomplete code>"
-}}
+Return a JSON array:
+[
+  {{
+    "severity": "high|medium|low|info",
+    "category": "<category_slug>",
+    "title": "<concise title>",
+    "description": "<what is missing>",
+    "line_start": <line number or null>,
+    "line_end": <line number or null>,
+    "code_snippet": "<the incomplete code>",
+    "explanation": "<why this matters for production>",
+    "suggestion": "<what should be implemented>",
+    "suggested_code": "<complete implementation>",
+    "original_code": "<original incomplete code>"
+  }}
+]
+If none found, return []. Return ONLY valid JSON array."""
 
-If no issues found, return an empty array [].
-Return ONLY the JSON array."""
+        raw_json = await self._call_gemini(prompt, timeout=10.0)
+        if not raw_json:
+            return []
 
         try:
-            response = self.model.generate_content(prompt)
-            issues = json.loads(response.text)
+            issues = json.loads(raw_json)
             for issue in issues:
                 issue["agent_type"] = "completeness"
             return issues
         except Exception as e:
-            logger.warning(f"LLM completeness analysis failed for {file_path}: {e}")
+            logger.warning(f"Failed to parse LLM completeness output for {file_path}: {e}")
             return []
 
 
-# Singleton instance
+# Singleton
 llm_client = LLMClient()

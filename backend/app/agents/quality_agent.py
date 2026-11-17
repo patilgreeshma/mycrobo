@@ -47,17 +47,18 @@ class QualityAgent(BaseAgent):
             # Long functions
             all_issues.extend(self._check_function_length(content, path, ext))
 
-        # 3. LLM-powered quality analysis (subset of files)
-        code_files = [
-            f for f in files
-            if f["extension"] in (".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".php", ".go")
-        ]
-        for file_info in code_files[:15]:
-            language = project_info.get("primary_language", "unknown")
-            llm_issues = await llm_client.analyze_quality(
-                file_info["content"], file_info["path"], language
-            )
-            all_issues.extend(llm_issues)
+        # 3. LLM-powered quality analysis (max 3 files to respect rate limits)
+        if llm_client.available:
+            code_files = [
+                f for f in files
+                if f["extension"] in (".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".php", ".go")
+            ]
+            for file_info in code_files[:3]:
+                language = project_info.get("primary_language", "unknown")
+                llm_issues = await llm_client.analyze_quality(
+                    file_info["content"], file_info["path"], language
+                )
+                all_issues.extend(llm_issues)
 
         return self._deduplicate(all_issues)
 

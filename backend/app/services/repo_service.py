@@ -1,6 +1,7 @@
 """
 CodeSentinel - Repository Service
 Handles cloning GitHub repositories and extracting ZIP uploads.
+Uses system git CLI by default, with GitPython fallback.
 """
 
 import os
@@ -9,6 +10,7 @@ import tempfile
 import zipfile
 import logging
 import re
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -25,10 +27,10 @@ class RepoService:
 
     async def clone_repo(self, repo_url: str, scan_id: str) -> str:
         """
-        Clone a GitHub repository to a local directory.
+        Clone a Git repository to a local directory.
 
         Args:
-            repo_url: GitHub repository URL
+            repo_url: Repository URL or shorthand (e.g., owner/repo)
             scan_id: Unique scan ID for directory naming
 
         Returns:
@@ -38,32 +40,69 @@ class RepoService:
             ValueError: If the URL is invalid
             RuntimeError: If cloning fails
         """
-        # Validate and normalize the URL
-        repo_url = self._normalize_github_url(repo_url)
-        if not repo_url:
-            raise ValueError("Invalid GitHub repository URL")
+        normalized_url = self._normalize_github_url(repo_url)
+        if not normalized_url:
+            raise ValueError(f"Invalid repository URL or shorthand: '{repo_url}'")
 
         dest_path = self.repos_dir / scan_id
+        if dest_path.exists():
+            shutil.rmtree(dest_path, ignore_errors=True)
         dest_path.mkdir(parents=True, exist_ok=True)
 
+        logger.info(f"Cloning {normalized_url} to {dest_path}")
+
+        # 1. Try system git CLI first (fast, shallow clone, async)
+        git_bin = shutil.which("git")
+        err_msg = ""
+        if git_bin:
+            try:
+                cmd = [
+                    git_bin,
+                    "clone",
+                    "--depth", "1",
+                    "--single-branch",
+                    normalized_url,
+                    str(dest_path),
+                ]
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                if proc.returncode == 0:
+                    logger.info(f"Successfully cloned {normalized_url} using git CLI")
+                    return str(dest_path)
+                else:
+                    err_msg = stderr.decode(errors="replace").strip()
+                    logger.warning(f"git clone failed (code {proc.returncode}): {err_msg}")
+            except Exception as e:
+                err_msg = str(e)
+                logger.warning(f"git subprocess failed: {e}")
+
+        # 2. Try GitPython fallback if installed
         try:
             import git
-            logger.info(f"Cloning {repo_url} to {dest_path}")
             git.Repo.clone_from(
-                repo_url,
+                normalized_url,
                 str(dest_path),
-                depth=1,  # Shallow clone for speed
+                depth=1,
                 single_branch=True,
             )
-            logger.info(f"Successfully cloned {repo_url}")
+            logger.info(f"Successfully cloned {normalized_url} using GitPython")
             return str(dest_path)
-
+        except ImportError:
+            pass
         except Exception as e:
-            # Clean up failed clone
-            if dest_path.exists():
-                shutil.rmtree(dest_path, ignore_errors=True)
-            logger.error(f"Failed to clone {repo_url}: {e}")
-            raise RuntimeError(f"Failed to clone repository: {e}")
+            err_msg = str(e)
+
+        # If we reached here, cloning failed
+        if dest_path.exists():
+            shutil.rmtree(dest_path, ignore_errors=True)
+
+        detail = err_msg or "git command failed or repository not accessible"
+        logger.error(f"Failed to clone {repo_url}: {detail}")
+        raise RuntimeError(f"Failed to clone repository: {detail}")
 
     async def extract_zip(self, zip_path: str, scan_id: str) -> str:
         """
@@ -77,40 +116,41 @@ class RepoService:
             Path to the extracted repository
         """
         dest_path = self.repos_dir / scan_id
+        if dest_path.exists():
+            shutil.rmtree(dest_path, ignore_errors=True)
         dest_path.mkdir(parents=True, exist_ok=True)
 
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                # Security: check for path traversal
-                for name in zf.namelist():
-                    if name.startswith("/") or ".." in name:
-                        raise ValueError(f"Unsafe file path in ZIP: {name}")
+                # Security: prevent zip-slip (path traversal)
+                for member in zf.infolist():
+                    target_path = dest_path / member.filename
+                    resolved = target_path.resolve()
+                    if not str(resolved).startswith(str(dest_path.resolve())):
+                        raise ValueError(f"Zip-slip vulnerability detected: {member.filename}")
 
-                zf.extractall(str(dest_path))
+                zf.extractall(dest_path)
 
-            # If the ZIP contains a single root directory, use that
-            contents = list(dest_path.iterdir())
-            if len(contents) == 1 and contents[0].is_dir():
+            # If the ZIP contained a single top-level directory, descend into it
+            entries = [e for e in dest_path.iterdir() if not e.name.startswith(".")]
+            if len(entries) == 1 and entries[0].is_dir():
                 # Move contents up one level
-                inner_dir = contents[0]
-                for item in inner_dir.iterdir():
-                    shutil.move(str(item), str(dest_path / item.name))
-                inner_dir.rmdir()
+                temp_dir = dest_path.parent / f"{scan_id}_temp"
+                entries[0].rename(temp_dir)
+                dest_path.rmdir()
+                temp_dir.rename(dest_path)
 
-            logger.info(f"Successfully extracted ZIP to {dest_path}")
+            logger.info(f"Successfully extracted {zip_path} to {dest_path}")
             return str(dest_path)
 
-        except zipfile.BadZipFile:
-            if dest_path.exists():
-                shutil.rmtree(dest_path, ignore_errors=True)
-            raise ValueError("Invalid or corrupted ZIP file")
         except Exception as e:
             if dest_path.exists():
                 shutil.rmtree(dest_path, ignore_errors=True)
+            logger.error(f"Failed to extract {zip_path}: {e}")
             raise RuntimeError(f"Failed to extract ZIP: {e}")
 
     async def save_upload(self, file_content: bytes, filename: str, scan_id: str) -> str:
-        """Save an uploaded file to a temporary location."""
+        """Save uploaded file bytes to a temporary location."""
         upload_dir = self.repos_dir / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
 
@@ -129,42 +169,54 @@ class RepoService:
 
     @staticmethod
     def _normalize_github_url(url: str) -> Optional[str]:
-        """Normalize and validate a GitHub repository URL."""
+        """
+        Normalize and validate a Git repository URL or shorthand.
+        Accepts:
+          - owner/repo (e.g. nomercy77/antislop)
+          - github.com/owner/repo
+          - https://github.com/owner/repo
+          - https://github.com/owner/repo.git
+          - git@github.com:owner/repo.git
+          - https://gitlab.com/...
+        """
+        if not url:
+            return None
+
         url = url.strip().rstrip("/")
 
-        # Remove .git suffix if present
-        if url.endswith(".git"):
-            url = url[:-4]
+        # SSH pattern: git@...
+        if url.startswith("git@"):
+            return url
 
-        # Pattern: https://github.com/user/repo
-        github_pattern = re.compile(
-            r'^https?://github\.com/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)$'
-        )
-
-        match = github_pattern.match(url)
+        # Direct owner/repo shorthand: e.g. "nomercy77/antislop"
+        short_owner_repo = re.compile(r'^([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)$')
+        match = short_owner_repo.match(url)
         if match:
             return f"https://github.com/{match.group(1)}/{match.group(2)}.git"
 
-        # Pattern: github.com/user/repo (missing protocol)
-        short_pattern = re.compile(
-            r'^github\.com/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)$'
-        )
-        match = short_pattern.match(url)
-        if match:
-            return f"https://github.com/{match.group(1)}/{match.group(2)}.git"
+        # Remove .git suffix if present for clean matching
+        clean_url = url[:-4] if url.endswith(".git") else url
+
+        # Full HTTPS / HTTP URL
+        if clean_url.startswith("http://") or clean_url.startswith("https://"):
+            return f"{clean_url}.git"
+
+        # Missing protocol with domain: e.g. github.com/owner/repo or gitlab.com/owner/repo
+        if "/" in clean_url and "." in clean_url.split("/")[0]:
+            return f"https://{clean_url}.git"
 
         return None
 
     @staticmethod
     def extract_repo_name(repo_url: str) -> str:
-        """Extract the repository name from a URL."""
+        """Extract the user/repo name from a URL or shorthand."""
         url = repo_url.strip().rstrip("/")
         if url.endswith(".git"):
             url = url[:-4]
-        parts = url.split("/")
+        parts = [p for p in url.split("/") if p and p not in ("https:", "http:", "github.com", "gitlab.com")]
         if len(parts) >= 2:
             return f"{parts[-2]}/{parts[-1]}"
-        return parts[-1] if parts else "unknown"
+        return parts[-1] if parts else "codebase"
 
 
 # Singleton

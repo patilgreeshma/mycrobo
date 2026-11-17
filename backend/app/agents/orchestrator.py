@@ -141,7 +141,8 @@ async def merge_and_enhance_node(state: AuditState) -> dict:
                 issues_by_file[fp] = []
             issues_by_file[fp].append(issue)
 
-        for file_path, file_issues in issues_by_file.items():
+        # Enhance issues for up to top 5 files with detected issues
+        for file_path, file_issues in list(issues_by_file.items())[:5]:
             # Only enhance issues missing explanations
             needs_enhancement = [i for i in file_issues if not i.get("explanation")]
             if needs_enhancement and file_path != "__global__":

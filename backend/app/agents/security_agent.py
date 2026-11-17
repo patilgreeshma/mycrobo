@@ -192,14 +192,15 @@ class SecurityAgent(BaseAgent):
             if is_code or is_config:
                 all_issues.extend(self._scan_insecure_practices(content, path))
 
-        # 4. LLM deep analysis on a subset of important files
-        code_files = [f for f in files if f["extension"] in (".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".php", ".go")]
-        for file_info in code_files[:20]:  # Limit to 20 files for API quota
-            language = project_info.get("primary_language", "unknown")
-            llm_issues = await llm_client.analyze_security(
-                file_info["content"], file_info["path"], language
-            )
-            all_issues.extend(llm_issues)
+        # 4. LLM deep analysis on a small subset of key files (max 3 files to respect rate limits)
+        if llm_client.available:
+            code_files = [f for f in files if f["extension"] in (".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".php", ".go")]
+            for file_info in code_files[:3]:
+                language = project_info.get("primary_language", "unknown")
+                llm_issues = await llm_client.analyze_security(
+                    file_info["content"], file_info["path"], language
+                )
+                all_issues.extend(llm_issues)
 
         # Deduplicate issues by file + line + category
         return self._deduplicate(all_issues)

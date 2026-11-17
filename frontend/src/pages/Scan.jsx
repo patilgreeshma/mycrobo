@@ -62,6 +62,8 @@ export default function Scan() {
 
           if (data.scan.status === 'complete') {
             navigate(`/report/${scanId}`, { replace: true });
+          } else if (data.scan.status === 'failed') {
+            setError(data.scan.error_message || 'The scan encountered an unexpected error.');
           }
         }
       } catch (err) {
