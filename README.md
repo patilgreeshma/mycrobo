@@ -114,7 +114,7 @@ Every finding includes:
 
 ```bash
 # Clone the repository
-git clone https://github.com/patilgreeshma/codesentinel.git
+git clone https://github.com/patilgreeshma/mycrobo.git
 cd codesentinel
 
 # Run the automated launch script
@@ -284,8 +284,3 @@ mycrobo/
 | **Actionable Fixes** | Explains *why* the issue matters, provides recommended remediations, and shows drop-in corrected code. |
 | **Interactive UI & Exports** | Modern React dashboard with live WebSocket scan progress, filterable issues, and Markdown/JSON report downloads. |
 
----
-
-## 📄 License
-
-MIT License — Feel free to use and extend for your software auditing workflows.
