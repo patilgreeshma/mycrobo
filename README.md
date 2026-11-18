@@ -114,7 +114,7 @@ Every finding includes:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/codesentinel.git
+git clone https://github.com/patilgreeshma/codesentinel.git
 cd codesentinel
 
 # Run the automated launch script

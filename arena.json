@@ -1,0 +1,21 @@
+{
+  "title": "CodeSentinel",
+  "description": "An AI-powered, architecture-agnostic codebase auditing agent that identifies security vulnerabilities, AI-generated slop, coding gaps, incomplete implementations, and vulnerable dependencies — with contextual explanations and drop-in code fixes powered by Google Gemini.",
+  "category": "AI Agent",
+  "tags": [
+    "AI Agents",
+    "Cybersecurity",
+    "Code Analysis",
+    "Static Analysis",
+    "LLM",
+    "Security",
+    "DevTools",
+    "LangGraph",
+    "Gemini"
+  ],
+  "repository": "https://github.com/patilgreeshma/codesentinel",
+  "demo": "",
+  "team": {
+    "github": "patilgreeshma"
+  }
+}
